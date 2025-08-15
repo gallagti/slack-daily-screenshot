@@ -1,0 +1,12 @@
+{
+  "name": "slack-daily-screenshot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@slack/web-api": "^7.4.0",
+    "playwright": "^1.47.0"
+  }
+}
