@@ -46,11 +46,6 @@ jobs:
           DARK_MUTED: '#3a4759'
           DARK_HEADER: '#1a2330'
 
-          # Include padding around the table and auto-grow viewport to fit
-          PAD_AROUND: '96'            # ~1 inch around the table
-          MAX_OUT_W: '4200'           # raise if table is extremely wide
-          MAX_OUT_H: '14000'          # raise if table is extremely tall
-
           # If your page needs auth cookies, add STORAGE_STATE_JSON as a secret (Playwright storageState JSON)
           # STORAGE_STATE_JSON: ${{ secrets.STORAGE_STATE_JSON }}
         run: npm start
