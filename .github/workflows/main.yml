@@ -28,15 +28,12 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          TARGET_URLS: ${{ secrets.TARGET_URLS }}
-          BROWSER: chromium
+          TARGET_URLS: ${{ secrets.TARGET_URLS }}   # e.g., https://statsplus.net/psd/sotd/
           VIEWPORT_W: '1366'
-          VIEWPORT_H: '1024'
-          FULL_PAGE: 'true'
-          WAIT_UNTIL: networkidle
-          WAIT_FOR_SELECTOR: ''
-          ADD_COMMENT: 'true'
+          VIEWPORT_H: '1000'
+          DEVICE_SCALE_FACTOR: '2'
           TITLE_PREFIX: 'Daily screenshot'
-          TIMEOUT_MS: '60000'
-          STORAGE_STATE_JSON: ${{ secrets.STORAGE_STATE_JSON }}
+          ADD_COMMENT: 'true'
+          TIMEOUT_MS: '90000'
         run: npm start
+
