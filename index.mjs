@@ -6,7 +6,7 @@ const {
   CHANNEL_ID,
   TARGET_URLS = '',
   TIMEOUT_MS = '90000',
-  VIEWPORT_W = '1366',
+  VIEWPORT_W = '1366',      // used only for initial load; final shot is fullPage
   VIEWPORT_H = '900',
   DEVICE_SCALE_FACTOR = '2',
   TITLE_PREFIX = 'Daily screenshot',
@@ -20,91 +20,137 @@ if (!SLACK_BOT_TOKEN || !CHANNEL_ID || !TARGET_URLS) {
 
 const slack = new WebClient(SLACK_BOT_TOKEN);
 
-// Build an explicit clip rect from the heading to the bottom-of-content link.
-async function screenshotStatOnly(page, url) {
-  await page.goto(url, { waitUntil: 'networkidle', timeout: parseInt(TIMEOUT_MS, 10) });
+// 1) On the original page, find the main table’s HTML (largest visible table).
+async function extractTableHTML(page) {
+  return await page.evaluate(() => {
+    const isVisible = (el) => {
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 5 && r.height > 5;
+    };
 
-  // 1) Find the heading and the bottom marker link(s)
-  const heading = page.getByText(/PSD\s+Stat\s+of\s+the\s+Day/i).first();
-  await heading.waitFor({ state: 'visible', timeout: parseInt(TIMEOUT_MS, 10) });
-  const hb = await heading.boundingBox();
-  if (!hb) throw new Error('Heading bbox not found');
+    // Prefer tables inside obvious content wrappers
+    const candidates = [
+      ...document.querySelectorAll('main table, #content table, .content table, .container table, article table, section table, body table')
+    ].filter(isVisible);
 
-  // Prefer “Stat of the Day List”, fall back to “Link to Today’s Stat”
-  let bottomLocator = page.getByText(/Stat of the Day List/i).first();
-  if (await bottomLocator.count() === 0) {
-    bottomLocator = page.getByText(/Link to Today/i).first();
+    if (!candidates.length) return { ok: false, reason: 'no_table_found' };
+
+    // Pick the largest by area
+    let best = candidates[0];
+    let bestArea = 0;
+    for (const t of candidates) {
+      const r = t.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area > bestArea) { best = t; bestArea = area; }
+    }
+    return { ok: true, html: best.outerHTML };
+  });
+}
+
+// 2) Render just that table in a clean page so the screenshot is only the table
+async function renderTableAndScreenshot(browser, tableHTML, meta = {}) {
+  const context = await browser.newContext({
+    viewport: { width: parseInt(VIEWPORT_W, 10), height: parseInt(VIEWPORT_H, 10) },
+    deviceScaleFactor: parseFloat(DEVICE_SCALE_FACTOR) || 1
+  });
+  const p = await context.newPage();
+
+  const minimalHTML = `
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 16px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    background: white;
   }
-  await bottomLocator.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-  let bottomBox = await bottomLocator.boundingBox();
+  table {
+    border-collapse: collapse;
+    width: max-content;
+    max-width: 100%;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+  thead th { position: sticky; top: 0; background: #f5f5f5; }
+</style>
+</head>
+<body>
+  ${tableHTML}
+</body>
+</html>`.trim();
 
-  // 2) Also detect the central content column to constrain left/right
-  // Try common wrappers; fall back to viewport width.
-  const columnLocator = page.locator('main, #content, .content, .container').first();
-  let cb = await columnLocator.boundingBox();
+  await p.setContent(minimalHTML, { waitUntil: 'load' });
 
-  // 3) Page dimensions (in CSS px) so our clip doesn’t overflow
-  const { pageW, pageH } = await page.evaluate(() => ({
-    pageW: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-    pageH: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+  // Expand width to fit the table but cap to something reasonable (Playwright stitches vertically)
+  const contentSize = await p.evaluate(() => ({
+    w: Math.ceil(document.documentElement.scrollWidth),
+    h: Math.ceil(document.documentElement.scrollHeight)
   }));
+  await p.setViewportSize({
+    width: Math.min(Math.max(contentSize.w + 32, 600), 2400),  // grow to fit, clamp 600–2400
+    height: Math.min(Math.max(contentSize.h + 32, 400), 3000)  // grow to fit, clamp 400–3000
+  });
 
-  // 4) Build the clip rectangle (CSS pixels)
-  const PADDING_TOP = 8;
-  const PADDING_SIDE = 8;
-  const PADDING_BOTTOM = 12;
-
-  const left = Math.max(0, Math.floor((cb?.x ?? 0)) - PADDING_SIDE);
-  const right = Math.min(pageW, Math.ceil((cb ? cb.x + cb.width : pageW)) + PADDING_SIDE);
-  const top = Math.max(0, Math.floor(hb.y) - PADDING_TOP);
-
-  // If we didn’t find a bottom link, cap to the column bottom; else to the link’s top.
-  const bottomCandidate = bottomBox ? bottomBox.y : (cb ? cb.y + cb.height : pageH);
-  const bottom = Math.min(pageH, Math.ceil(bottomCandidate) + PADDING_BOTTOM);
-
-  const clip = {
-    x: left,
-    y: top,
-    width: Math.max(1, right - left),
-    height: Math.max(1, bottom - top)
-  };
-
-  // 5) Take a clipped screenshot (this is a real bitmap crop from the page)
-  const png = await page.screenshot({ type: 'png', clip });
+  const png = await p.screenshot({ fullPage: true, type: 'png' });
+  await context.close();
   return png;
 }
 
 async function run() {
   const urls = TARGET_URLS.split(',').map(s => s.trim()).filter(Boolean);
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  const context = await browser.newContext({
+
+  // We only use this context to visit the real page and extract the table HTML
+  const navContext = await browser.newContext({
     viewport: { width: parseInt(VIEWPORT_W, 10), height: parseInt(VIEWPORT_H, 10) },
     deviceScaleFactor: parseFloat(DEVICE_SCALE_FACTOR) || 1
   });
-  const page = await context.newPage();
+  const page = await navContext.newPage();
+
   const dateTag = new Date().toISOString().slice(0, 10);
 
   try {
     for (const url of urls) {
-      const png = await screenshotStatOnly(page, url);
+      await page.goto(url, { waitUntil: 'networkidle', timeout: parseInt(TIMEOUT_MS, 10) });
+
+      // Give any late-loading data a moment (adjust if needed)
+      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+
+      const res = await extractTableHTML(page);
+      if (!res.ok) {
+        throw new Error(`Could not locate a table on the page: ${res.reason || 'unknown'}`);
+      }
+
+      const png = await renderTableAndScreenshot(browser, res.html);
       const niceName = url.replace(/^https?:\/\//, '').replace(/[^\w.-]+/g, '_').slice(0, 80);
-      const filename = `${niceName}-sotd-cropped-${dateTag}.png`;
+      const filename = `${niceName}-table-${dateTag}.png`;
 
       await slack.files.uploadV2({
         channel_id: CHANNEL_ID,
         filename,
         file: png,
-        title: `${TITLE_PREFIX} • ${url} • SotD cropped`,
+        title: `${TITLE_PREFIX} • table only`,
         initial_comment: ADD_COMMENT === 'true'
-          ? `Snapshot of <${url}> — ${dateTag}`
+          ? `Table snapshot of <${url}> — ${dateTag}`
           : undefined,
         filetype: 'png'
       });
 
-      console.log(`Uploaded cropped image for: ${url}`);
+      console.log(`Uploaded table-only screenshot for: ${url}`);
     }
   } finally {
-    await context.close();
+    await navContext.close();
     await browser.close();
   }
 }
