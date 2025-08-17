@@ -11,10 +11,10 @@ const {
   DEVICE_SCALE_FACTOR = '2',
   TITLE_PREFIX = 'Daily screenshot',
   ADD_COMMENT = 'true',
-  DARK_MODE = 'true',          // keep dark mode
+  DARK_MODE = 'true',
   DARK_BG = '#0b0f14',
   DARK_SURFACE = '#121821',
-  DARK_TEXT = '#ffffff',       // force all text to white
+  DARK_TEXT = '#ffffff',
   DARK_MUTED = '#3a4759',
   DARK_HEADER = '#1a2330'
 } = process.env;
@@ -49,7 +49,7 @@ async function extractTableHTML(page) {
       if (area > bestArea) { best = t; bestArea = area; }
     }
 
-    // Remove links: replace <a> with its text content
+    // Remove links: replace <a> with plain text
     best.querySelectorAll('a').forEach(a => {
       const span = document.createElement('span');
       span.textContent = a.textContent;
@@ -77,28 +77,29 @@ async function renderTableAndScreenshot(browser, tableHTML) {
   body {
     background: ${DARK_BG};
     font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
-    padding: 96px; /* ~1 inch all around */
+    padding: 96px; /* ~1 inch padding */
   }
   table {
     border-collapse: collapse;
     background: ${DARK_SURFACE};
     color: ${DARK_TEXT};
-    font-size: 16px;
-    line-height: 1.4;
+    font-size: 22px;   /* bigger body text */
+    line-height: 1.5;
     margin: auto;
   }
   th, td {
     border: 1px solid ${DARK_MUTED};
-    padding: 8px 14px;
+    padding: 10px 16px;
     text-align: left;
     vertical-align: middle;
   }
   thead th {
     background: ${DARK_HEADER};
     color: ${DARK_TEXT};
-    font-weight: 600;
+    font-weight: 700;
+    font-size: 24px;   /* headers bigger + bold */
   }
-  /* Force ALL text white, just in case */
+  /* Force all text white */
   * { color: ${DARK_TEXT} !important; text-decoration: none !important; }
 </style>
 </head>
