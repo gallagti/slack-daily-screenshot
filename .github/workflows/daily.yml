@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci
+          npm install --no-audit --no-fund
           npx playwright install --with-deps
 
       - name: Run screenshot and post to Slack
@@ -29,7 +29,6 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           TARGET_URLS: ${{ secrets.TARGET_URLS }}
-          # Optional tuning (override in repo "Variables" or Secrets as needed)
           BROWSER: chromium
           VIEWPORT_W: '1366'
           VIEWPORT_H: '1024'
@@ -39,13 +38,5 @@ jobs:
           ADD_COMMENT: 'true'
           TITLE_PREFIX: 'Daily screenshot'
           TIMEOUT_MS: '60000'
-          # Optional cookie storage state (Playwright JSON string)
           STORAGE_STATE_JSON: ${{ secrets.STORAGE_STATE_JSON }}
         run: npm start
-
-      # Optional: keep screenshots as a build artifact (if you also write them to disk)
-      # - name: Upload screenshots artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: screenshots
-      #     path: out/*.png
