@@ -11,12 +11,20 @@ const {
   DEVICE_SCALE_FACTOR = '2',
   TITLE_PREFIX = 'Daily screenshot',
   ADD_COMMENT = 'true',
-  DARK_MODE = 'true',
+
+  // Appearance
   DARK_BG = '#0b0f14',
   DARK_SURFACE = '#121821',
   DARK_TEXT = '#ffffff',
   DARK_MUTED = '#3a4759',
-  DARK_HEADER = '#1a2330'
+  DARK_HEADER = '#1a2330',
+
+  // Padding (around the table in the final image)
+  PAD_AROUND = '96',          // ~1 inch ≈ 96px
+
+  // Safety caps for auto-resize (you can raise if you have giant tables)
+  MAX_OUT_W = '3600',
+  MAX_OUT_H = '10000'
 } = process.env;
 
 if (!SLACK_BOT_TOKEN || !CHANNEL_ID || !TARGET_URLS) {
@@ -26,6 +34,7 @@ if (!SLACK_BOT_TOKEN || !CHANNEL_ID || !TARGET_URLS) {
 
 const slack = new WebClient(SLACK_BOT_TOKEN);
 
+// 1) Extract the largest visible table HTML from the real page (and strip links)
 async function extractTableHTML(page) {
   return await page.evaluate(() => {
     const isVisible = (el) => {
@@ -34,22 +43,20 @@ async function extractTableHTML(page) {
       const r = el.getBoundingClientRect();
       return r.width > 5 && r.height > 5;
     };
-
     const candidates = [
       ...document.querySelectorAll('main table, #content table, .content table, .container table, article table, section table, body table')
     ].filter(isVisible);
-
     if (!candidates.length) return { ok: false, reason: 'no_table_found' };
 
-    let best = candidates[0];
-    let bestArea = 0;
+    // Pick largest by area
+    let best = candidates[0], bestArea = 0;
     for (const t of candidates) {
       const r = t.getBoundingClientRect();
       const area = r.width * r.height;
       if (area > bestArea) { best = t; bestArea = area; }
     }
 
-    // Remove links: replace <a> with plain text
+    // Strip links (render as plain text)
     best.querySelectorAll('a').forEach(a => {
       const span = document.createElement('span');
       span.textContent = a.textContent;
@@ -60,6 +67,7 @@ async function extractTableHTML(page) {
   });
 }
 
+// 2) Re-render just that table, auto-resize viewport to fit it, then clip to table + padding
 async function renderTableAndScreenshot(browser, tableHTML) {
   const context = await browser.newContext({
     viewport: { width: parseInt(VIEWPORT_W, 10), height: parseInt(VIEWPORT_H, 10) },
@@ -67,25 +75,24 @@ async function renderTableAndScreenshot(browser, tableHTML) {
   });
   const p = await context.newPage();
 
-  const minimalHTML = `
+  // Note: no body padding—padding is added in the clip so it’s guaranteed visible even when we resize.
+  const html = `
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; padding: 0; }
+  html, body { margin: 0; padding: 0; background: ${DARK_BG}; }
   body {
-    background: ${DARK_BG};
     font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
-    padding: 96px; /* ~1 inch padding */
   }
   table {
     border-collapse: collapse;
     background: ${DARK_SURFACE};
     color: ${DARK_TEXT};
-    font-size: 22px;   /* bigger body text */
+    font-size: 22px;               /* body text */
     line-height: 1.5;
-    margin: auto;
+    margin: 0 auto;                /* center horizontally */
   }
   th, td {
     border: 1px solid ${DARK_MUTED};
@@ -97,9 +104,9 @@ async function renderTableAndScreenshot(browser, tableHTML) {
     background: ${DARK_HEADER};
     color: ${DARK_TEXT};
     font-weight: 700;
-    font-size: 24px;   /* headers bigger + bold */
+    font-size: 24px;               /* header text */
   }
-  /* Force all text white */
+  /* force all text white, remove link styling just in case */
   * { color: ${DARK_TEXT} !important; text-decoration: none !important; }
 </style>
 </head>
@@ -108,10 +115,10 @@ async function renderTableAndScreenshot(browser, tableHTML) {
 </body>
 </html>`.trim();
 
-  await p.setContent(minimalHTML, { waitUntil: 'load' });
+  await p.setContent(html, { waitUntil: 'load' });
 
+  // Wait for the table and get its bounding box (CSS px)
   const table = await p.waitForSelector('table', { state: 'visible', timeout: 15000 });
-
   let box = await table.boundingBox();
   if (!box) {
     box = await p.$eval('table', el => {
@@ -120,12 +127,37 @@ async function renderTableAndScreenshot(browser, tableHTML) {
     });
   }
 
-  box.x = Math.max(0, Math.floor(box.x));
-  box.y = Math.max(0, Math.floor(box.y));
-  box.width = Math.max(1, Math.ceil(box.width));
-  box.height = Math.max(1, Math.ceil(box.height));
+  // Expand clip by PAD_AROUND on all sides
+  const PAD = Math.max(0, parseInt(PAD_AROUND, 10) || 0);
+  const clip = {
+    x: Math.max(0, Math.floor(box.x - PAD)),
+    y: Math.max(0, Math.floor(box.y - PAD)),
+    width: Math.max(1, Math.ceil(box.width + 2 * PAD)),
+    height: Math.max(1, Math.ceil(box.height + 2 * PAD))
+  };
 
-  const png = await p.screenshot({ type: 'png', clip: box });
+  // Ensure the viewport is large enough to fully cover the clip region
+  const needW = clip.x + clip.width + 2;   // a hair extra
+  const needH = clip.y + clip.height + 2;
+
+  const maxW = parseInt(MAX_OUT_W, 10) || 3600;
+  const maxH = parseInt(MAX_OUT_H, 10) || 10000;
+
+  const newW = Math.min(Math.max(needW, parseInt(VIEWPORT_W, 10)), maxW);
+  const newH = Math.min(Math.max(needH, parseInt(VIEWPORT_H, 10)), maxH);
+
+  await p.setViewportSize({ width: newW, height: newH });
+
+  // Re-measure after resize (layout can shift slightly)
+  const box2 = await table.boundingBox();
+  const clip2 = {
+    x: Math.max(0, Math.floor((box2?.x ?? box.x) - PAD)),
+    y: Math.max(0, Math.floor((box2?.y ?? box.y) - PAD)),
+    width: Math.max(1, Math.ceil((box2?.width ?? box.width) + 2 * PAD)),
+    height: Math.max(1, Math.ceil((box2?.height ?? box.height) + 2 * PAD))
+  };
+
+  const png = await p.screenshot({ type: 'png', clip: clip2 });
 
   await context.close();
   return png;
@@ -134,12 +166,13 @@ async function renderTableAndScreenshot(browser, tableHTML) {
 async function run() {
   const urls = TARGET_URLS.split(',').map(s => s.trim()).filter(Boolean);
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
+
+  // Navigate original page just to extract the table HTML
   const navContext = await browser.newContext({
     viewport: { width: parseInt(VIEWPORT_W, 10), height: parseInt(VIEWPORT_H, 10) },
     deviceScaleFactor: parseFloat(DEVICE_SCALE_FACTOR) || 1
   });
   const page = await navContext.newPage();
-
   const dateTag = new Date().toISOString().slice(0, 10);
 
   try {
