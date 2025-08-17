@@ -26,27 +26,31 @@ jobs:
 
       - name: Run screenshot and post to Slack
         env:
-          # REQUIRED SECRETS
+          # REQUIRED SECRETS (set these in repo Settings → Secrets and variables → Actions)
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}  # xoxb-...
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}            # e.g., C0123456789
           TARGET_URLS: ${{ secrets.TARGET_URLS }}          # e.g., https://statsplus.net/psd/sotd/
 
-          # RENDER / CAPTURE SETTINGS (safe defaults)
+          # Rendering / capture
           VIEWPORT_W: '1600'
           VIEWPORT_H: '1000'
-          DEVICE_SCALE_FACTOR: '2'
+          DEVICE_SCALE_FACTOR: '2'    # 2 = crisp "retina" output
           TIMEOUT_MS: '90000'
           TITLE_PREFIX: 'Daily screenshot'
           ADD_COMMENT: 'true'
 
-          # DARK MODE (enable + palette)
-          DARK_MODE: 'true'          # set to 'false' to disable
+          # Dark theme + readability (these are used by index.mjs)
           DARK_BG: '#0b0f14'
           DARK_SURFACE: '#121821'
-          DARK_TEXT: '#e9eef5'
-          DARK_MUTED: '#2b3745'
+          DARK_TEXT: '#ffffff'        # force white text everywhere
+          DARK_MUTED: '#3a4759'
           DARK_HEADER: '#1a2330'
 
-          # If your page needs auth cookies, add STORAGE_STATE_JSON as a secret (Playwright storageState)
+          # Include padding around the table and auto-grow viewport to fit
+          PAD_AROUND: '96'            # ~1 inch around the table
+          MAX_OUT_W: '4200'           # raise if table is extremely wide
+          MAX_OUT_H: '14000'          # raise if table is extremely tall
+
+          # If your page needs auth cookies, add STORAGE_STATE_JSON as a secret (Playwright storageState JSON)
           # STORAGE_STATE_JSON: ${{ secrets.STORAGE_STATE_JSON }}
         run: npm start
