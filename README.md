@@ -1,2 +1,2 @@
 # slack-daily-screenshot
-Posting a simple screenshot to slack
+Posting a simple screenshot to slack using GH Actions
