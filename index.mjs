@@ -8,7 +8,7 @@ const {
   TIMEOUT_MS = '60000',
   VIEWPORT_W = '1366',
   VIEWPORT_H = '900',
-  DEVICE_SCALE_FACTOR = '2',           // crisp text
+  DEVICE_SCALE_FACTOR = '2',
   TITLE_PREFIX = 'Daily screenshot',
   ADD_COMMENT = 'true'
 } = process.env;
@@ -20,47 +20,59 @@ if (!SLACK_BOT_TOKEN || !CHANNEL_ID || !TARGET_URLS) {
 
 const slack = new WebClient(SLACK_BOT_TOKEN);
 
-// Heuristic: pick the centered, sizeable block container (the “one thing”)
-async function getCenteredContainerHandle(page) {
+// Find the smallest reasonable ancestor element that CONTAINS the "Stat of the Day" heading
+async function findSotDContainerHandle(page) {
   return await page.evaluateHandle(() => {
-    const isBlock = el => {
-      const s = getComputedStyle(el);
-      return s.display !== 'inline' && s.visibility !== 'hidden';
-    };
-    const bigEnough = el => {
-      const r = el.getBoundingClientRect();
-      return r.width > 200 && r.height > 200;    // tweak if needed
+    const HEADING_TEXT_RE = /stat of the day/i;
+
+    // 1) find the heading node
+    const allHeadings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'));
+    const heading = allHeadings.find(h => HEADING_TEXT_RE.test(h.textContent || ''));
+    if (!heading) return null;
+
+    // 2) walk up to a good wrapper (avoid BODY/HTML; prefer main/article/section/.container/.content)
+    const preferredSelectors = ['main', 'article', 'section', '#content', '.content', '.container'];
+    let el = heading;
+
+    // helper checks
+    const isGoodSize = (node) => {
+      const r = node.getBoundingClientRect();
+      return r.width > 300 && r.height > 150;
     };
 
-    // element under the exact viewport center
-    let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
-    if (!el) return null;
-
-    // climb to a good container (stop at body/html)
-    while (el && el.parentElement && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-      if (isBlock(el) && bigEnough(el)) break;
-      el = el.parentElement;
+    // prefer first ancestor that matches a preferred selector and is reasonably sized
+    let cur = heading;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (isGoodSize(cur) && preferredSelectors.some(sel => cur.matches?.(sel))) {
+        el = cur;
+        break;
+      }
+      cur = cur.parentElement;
     }
 
-    // If we landed on BODY/HTML, try common wrappers as a fallback
-    if (el && (el.tagName === 'BODY' || el.tagName === 'HTML')) {
-      el = document.querySelector('main, #main, .container, #content, .content, article') || document.body;
+    // if nothing matched, climb until we get a reasonable sized block (but not body/html)
+    if (el === heading) {
+      cur = heading.parentElement;
+      while (cur && cur !== document.body && cur !== document.documentElement) {
+        const style = getComputedStyle(cur);
+        const isInline = style.display === 'inline';
+        if (!isInline && isGoodSize(cur)) { el = cur; break; }
+        cur = cur.parentElement;
+      }
     }
 
-    return el;
+    return el || heading;
   });
 }
 
-async function screenshotMainThing(page, url) {
+async function screenshotSotD(page, url) {
   await page.goto(url, { waitUntil: 'networkidle', timeout: parseInt(TIMEOUT_MS, 10) });
-
-  // Make sure layout has settled a bit
+  // small settle window for any late assets
   await page.waitForLoadState('networkidle', { timeout: parseInt(TIMEOUT_MS, 10) });
 
-  const handle = await getCenteredContainerHandle(page);
-  if (!handle) throw new Error('Could not locate the centered container.');
+  const handle = await findSotDContainerHandle(page);
+  if (!handle) throw new Error('Could not find the Stat of the Day container.');
 
-  // Ensure it’s in view (Playwright will scroll for element screenshots)
   const png = await handle.screenshot({ type: 'png' });
   await handle.dispose();
   return png;
@@ -78,21 +90,21 @@ async function run() {
 
   try {
     for (const url of urls) {
-      const png = await screenshotMainThing(page, url);
+      const png = await screenshotSotD(page, url);
       const niceName = url.replace(/^https?:\/\//, '').replace(/[^\w.-]+/g, '_').slice(0, 80);
-      const filename = `${niceName}-centered-${dateTag}.png`;
+      const filename = `${niceName}-sotd-${dateTag}.png`;
 
       await slack.files.uploadV2({
         channel_id: CHANNEL_ID,
         filename,
         file: png,
-        title: `${TITLE_PREFIX} • ${url} • centered`,
+        title: `${TITLE_PREFIX} • ${url} • Stat of the Day`,
         initial_comment: ADD_COMMENT === 'true'
-          ? `Snapshot of <${url}> (centered content) — ${dateTag}`
+          ? `Snapshot of <${url}> — ${dateTag}`
           : undefined
       });
 
-      console.log(`Uploaded: ${url} (centered)`);
+      console.log(`Uploaded: ${url} (SotD container)`);
     }
   } finally {
     await context.close();
